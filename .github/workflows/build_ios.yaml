@@ -1,0 +1,193 @@
+name: Build TrollStore TIPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      sing_box_ref:
+        description: "sing-box git ref to build Libbox from (defaults to v<MARKETING_VERSION>)"
+        required: false
+        default: ""
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Xcode (prefer Xcode 26+ for Swift 6.1 nonisolated deinit)
+        run: |
+          # Library/Network/ExtensionProfile.swift uses `nonisolated deinit`, which is
+          # stable in Swift 6.1 (Xcode 26+) but only experimental in Xcode 16.x.
+          xc="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$xc" ]; then
+            xc="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [ -z "$xc" ]; then
+            echo "No Xcode found on runner" >&2; exit 1
+          fi
+          sudo xcode-select -s "$xc/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install iOS platform if missing
+        run: |
+          # WidgetExtension targets iOS 18, so the iOS device DDI must be installed
+          # for `generic/platform=iOS` to be a valid destination. Simulator-only runtimes
+          # (preinstalled on macos-15) are not sufficient.
+          # This command is idempotent — skips download if the platform is already present.
+          xcodebuild -downloadPlatform iOS
+
+      - name: Resolve version and sing-box ref
+        id: ref
+        run: |
+          # Parse pbxproj directly: the SFI app uses a 3-part numeric MARKETING_VERSION
+          # (e.g. "1.13.12"). The HelperService uses "1.13.0-alpha.21" (excluded by the
+          # `[0-9]+\.[0-9]+\.[0-9]+` shape) and extensions use bare `1.0` (excluded by
+          # the surrounding quotes).
+          version="$(grep -E 'MARKETING_VERSION = "[0-9]+\.[0-9]+\.[0-9]+";' \
+            sing-box.xcodeproj/project.pbxproj \
+            | sed -E 's/.*"([^"]+)".*/\1/' | sort -u | tail -1)"
+          if [ -z "$version" ]; then
+            echo "Failed to read MARKETING_VERSION from pbxproj" >&2; exit 1
+          fi
+          if [ -n "${{ inputs.sing_box_ref }}" ]; then
+            ref="${{ inputs.sing_box_ref }}"
+          else
+            ref="v${version}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "App version: ${version}, sing-box ref: ${ref}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: false
+
+      - name: Install ldid and xcbeautify
+        run: brew install ldid xcbeautify
+
+      - name: Clone sing-box
+        run: |
+          git clone --depth 1 --branch "${{ steps.ref.outputs.ref }}" \
+            https://github.com/SagerNet/sing-box.git "$RUNNER_TEMP/sing-box"
+
+      - name: Cache Libbox.xcframework
+        id: cache-libbox
+        uses: actions/cache@v4
+        with:
+          path: Libbox.xcframework
+          key: libbox-${{ runner.os }}-${{ steps.ref.outputs.ref }}-v1
+
+      - name: Install gomobile (SagerNet fork)
+        if: steps.cache-libbox.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}/sing-box
+        run: make lib_install
+
+      - name: Build Libbox.xcframework
+        if: steps.cache-libbox.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}/sing-box
+        run: |
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          make lib_apple
+          cp -R Libbox.xcframework "$GITHUB_WORKSPACE/Libbox.xcframework"
+
+      - name: Resolve SPM packages
+        run: |
+          xcodebuild -resolvePackageDependencies -scheme SFI
+
+      - name: Archive SFI (unsigned)
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild archive \
+            -scheme SFI \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/SFI.xcarchive \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            ENABLE_BITCODE=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            ARCHS=arm64 \
+            2>&1 | tee build/xcodebuild.log | xcbeautify --renderer github-actions
+
+      - name: Show raw build errors on failure
+        if: failure()
+        run: |
+          if [ -f build/xcodebuild.log ]; then
+            echo "::group::Raw xcodebuild errors"
+            grep -E "error:|note:.*declared here|FAILED|cannot find" build/xcodebuild.log | head -80 || true
+            echo "::endgroup::"
+            echo "::group::Last 200 lines of raw log"
+            tail -200 build/xcodebuild.log
+            echo "::endgroup::"
+          fi
+
+      - name: Upload xcodebuild log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          if-no-files-found: ignore
+
+      - name: Inspect archive
+        run: |
+          echo "--- build/ tree ---"
+          find build -maxdepth 6 -name "*.app" -o -name "Applications" -type d
+          echo "--- Applications/ contents ---"
+          ls -la build/SFI.xcarchive/Products/Applications/ 2>&1 || true
+
+      - name: Package TIPA
+        id: tipa
+        run: |
+          APP_PATH=$(find build/SFI.xcarchive/Products/Applications -name "*.app" -type d | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: No .app found in xcarchive Products/Applications"
+            echo "Archive contents:"
+            ls -R build/SFI.xcarchive
+            exit 1
+          fi
+          
+          echo "Found app at: $APP_PATH"
+          
+          # Create a simple IPA (just a zip with .app inside Payload/)
+          mkdir -p build/SFI/Payload
+          cp -R "$APP_PATH" build/SFI/Payload/
+          cd build/SFI
+          zip -r SFI-unsigned.ipa Payload
+          cd ../..
+          
+          echo "Created unsigned IPA"
+          ls -lh build/SFI/SFI-unsigned.ipa
+      
+      - name: Upload IPA as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SFI-unsigned-ipa
+          path: build/SFI/*.ipa
+          if-no-files-found: error
+          retention-days: 30
+      
+      - name: Upload archive as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SFI-xcarchive
+          path: build/SFI.xcarchive
+          retention-days: 7
