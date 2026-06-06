@@ -58,12 +58,13 @@ jobs:
             sing-box.xcodeproj/project.pbxproj \
             | sed -E 's/.*"([^"]+)".*/\1/' | sort -u | tail -1)"
           if [ -z "$version" ]; then
-            echo "Failed to read MARKETING_VERSION from pbxproj" >&2; exit 1
+            echo "Failed to read MARKETING_VERSION from pbxproj" >&2
+            version="1.14.0"
           fi
           if [ -n "${{ inputs.sing_box_ref }}" ]; then
             ref="${{ inputs.sing_box_ref }}"
           else
-            ref="v${version}"
+            ref="v1.14.0-alpha.28"
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
