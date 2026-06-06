@@ -57,10 +57,10 @@ jobs:
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
           echo "App version: ${version}, sing-box ref: ${ref}"
 
-      - name: Set up Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version: ~1.25.10
           cache: false
 
       - name: Install ldid and xcbeautify
