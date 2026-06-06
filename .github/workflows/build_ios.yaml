@@ -26,9 +26,9 @@ jobs:
           submodules: recursive
 
       - name: Set up latest Xcode
-        uses: marketplace/actions/setup-xcode-version@v1
+        uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: 'latest-stable'
+          xcode-version: latest
 
       - name: Show Xcode version
         run: |
