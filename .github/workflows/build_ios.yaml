@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-latest
     timeout-minutes: 60
 
     steps:
@@ -25,27 +25,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Select Xcode (prefer Xcode 26+ for Swift 6.1 nonisolated deinit)
-        run: |
-          # Library/Network/ExtensionProfile.swift uses `nonisolated deinit`, which is
-          # stable in Swift 6.1 (Xcode 26+) but only experimental in Xcode 16.x.
-          xc="$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)"
-          if [ -z "$xc" ]; then
-            xc="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
-          fi
-          if [ -z "$xc" ]; then
-            echo "No Xcode found on runner" >&2; exit 1
-          fi
-          sudo xcode-select -s "$xc/Contents/Developer"
-          xcodebuild -version
+      - name: Set up latest Xcode
+        uses: marketplace/actions/setup-xcode-version@v1
+        with:
+          xcode-version: 'latest-stable'
 
-      - name: Install iOS platform if missing
+      - name: Show Xcode version
         run: |
-          # WidgetExtension targets iOS 18, so the iOS device DDI must be installed
-          # for `generic/platform=iOS` to be a valid destination. Simulator-only runtimes
-          # (preinstalled on macos-15) are not sufficient.
-          # This command is idempotent — skips download if the platform is already present.
-          xcodebuild -downloadPlatform iOS
+          xcodebuild -version
 
       - name: Resolve version and sing-box ref
         id: ref
