@@ -141,8 +141,8 @@ jobs:
           echo "--- Applications/ contents ---"
           ls -la build/SFI.xcarchive/Products/Applications/ 2>&1 || true
 
-      - name: Package TIPA
-        id: tipa
+      - name: Package unsigned IPA
+        id: ipa
         run: |
           APP_PATH=$(find build/SFI.xcarchive/Products/Applications -name "*.app" -type d | head -n 1)
           
@@ -179,3 +179,23 @@ jobs:
           name: SFI-xcarchive
           path: build/SFI.xcarchive
           retention-days: 7
+
+      - name: Package TIPA
+        id: tipa
+        run: |
+          app="$(find build/SFI.xcarchive/Products/Applications -maxdepth 1 -name '*.app' -type d | head -1)"
+          if [ -z "$app" ]; then
+            echo "No .app found in archive" >&2; exit 1
+          fi
+          echo "Found app: $app"
+          out="build/SFI-${{ steps.ref.outputs.version }}-TrollStore.tipa"
+          bash scripts/make_tipa.sh "$app" "$out"
+          echo "path=${out}" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$out")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload TIPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.tipa.outputs.name }}
+          path: ${{ steps.tipa.outputs.path }}
+          if-no-files-found: error
